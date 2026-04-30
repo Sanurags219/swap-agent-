@@ -45,7 +45,15 @@ export default function Home() {
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
   const { data: balance, refetch: refetchBalance } = useBalance({ address });
+  const { data: cusdBalance, refetch: refetchCusd } = useBalance({ address, token: TOKENS.CUSD as `0x${string}` });
+  const { data: ceurBalance, refetch: refetchCeur } = useBalance({ address, token: TOKENS.CEUR as `0x${string}` });
   const { sendTransactionAsync } = useSendTransaction();
+
+  const refetchAllBalances = () => {
+    refetchBalance();
+    refetchCusd();
+    refetchCeur();
+  };
 
   // Initialize Farcaster SDK and Load History
   useEffect(() => {
@@ -119,32 +127,45 @@ export default function Home() {
               Context:
               ${Object.entries(TOKENS)
                 .filter(([symbol]) => enabledTokens[symbol])
-                .map(([symbol, address]) => `- ${symbol}: ${address}`)
+                .map(([symbol, address]) => {
+                  let bal = '0';
+                  if (symbol === 'CELO') bal = balance ? formatUnits(balance.value, 18) : '0';
+                  if (symbol === 'CUSD') bal = cusdBalance ? formatUnits(cusdBalance.value, 18) : '0';
+                  if (symbol === 'CEUR') bal = ceurBalance ? formatUnits(ceurBalance.value, 18) : '0';
+                  return `- ${symbol}: ${address} (Balance: ${bal})`;
+                })
                 .join('\n')}
-              - User Balance: ${balance ? formatUnits(balance.value, 18) : '0'} CELO
               - NOTE: ONLY RECOMMEND OR USE TOKENS LISTED ABOVE.
               
-              Task: Analyze the intent. 
-              - If the user wants to swap, return a JSON object.
-              - Support relative amounts like "half my CELO" (calculate based on balance).
-              - Support "buy 100 cUSD" (set "buyAmount" instead of "sellAmount").
-              - Priority/Preference: If they mention "lowest fee", acknowledge it in the content but note that 0x finds the best route automatically.
+              Task: Analyze the user intent and convert it into a structured command or text response.
+              
+              Complex Swap Rules:
+              - If user says "half my [Token]", calculate: (Balance / 2).
+              - If user says "all my [Token]" or "max [Token]", use the full Balance.
+              - If user says "buy X [Token]", set "buyAmount" to X. Do NOT set "sellAmount".
+              - If user says "sell X [Token]" or "swap X [Token]", set "sellAmount" to X. Do NOT set "buyAmount".
+              - If user mentions "lowest fee" or "best price", add a note in "content" that 0x 0x protocol aggregates multiple liquidity sources for the most efficient route.
+              - ALWAYS identify the correct sellToken and buyToken from the context.
               
               JSON Format for swaps:
               {
                 "type": "swap_request",
                 "sellToken": "token symbol",
                 "buyToken": "token symbol",
-                "sellAmount": "number (optional)",
-                "buyAmount": "number (optional)",
-                "content": "friendly internal thought or confirmation message"
+                "sellAmount": "calculated number string (optional)",
+                "buyAmount": "calculated number string (optional)",
+                "content": "A high-conviction confirmation message or expert thought"
               }
               
-              Otherwise, return a friendly text response in:
+              JSON Format for general chat:
               {
                 "type": "text",
-                "content": "your message"
+                "content": "Your helpful response"
               }
+              
+              Examples:
+              - "swap half my CELO to cUSD" -> { "type": "swap_request", "sellToken": "CELO", "buyToken": "CUSD", "sellAmount": "5.0" (if balance is 10), "content": "Calculating half of your 10 CELO balance..." }
+              - "buy 100 cEUR with CELO" -> { "type": "swap_request", "sellToken": "CELO", "buyToken": "CEUR", "buyAmount": "100", "content": "Finding the best route to acquire 100 cEUR using your CELO." }
             ` }]
           }
         ],
@@ -261,7 +282,7 @@ export default function Home() {
       };
 
       await saveToHistory(trade);
-      refetchBalance();
+      refetchAllBalances();
 
       setMessages(prev => [...prev, { role: 'assistant', content: `Swap successful! Hash: ${tx.substring(0, 10)}...` }]);
     } catch (error: any) {
@@ -471,14 +492,30 @@ export default function Home() {
                   <span className="text-sm font-medium text-white">cUSD</span>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm font-bold text-white">0.00</div>
+                  <div className="text-sm font-bold text-white">{cusdBalance ? formatUnits(cusdBalance.value, 18).slice(0, 6) : '0.00'}</div>
                   <div className="text-[10px] text-slate-500">$1.00</div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-[#35D07F]/10 border border-[#35D07F]/20 rounded-lg flex items-center justify-center text-[10px] font-bold text-[#35D07F]">€</div>
+                  <span className="text-sm font-medium text-white">cEUR</span>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-bold text-white">{ceurBalance ? formatUnits(ceurBalance.value, 18).slice(0, 6) : '0.00'}</div>
+                  <div className="text-[10px] text-slate-500">$1.08</div>
                 </div>
               </div>
             </div>
             <div className="mt-8 p-4 bg-white/[0.02] border border-white/5 rounded-2xl">
               <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Total Value</div>
-              <div className="text-2xl font-light text-white">$ {balance ? (parseFloat(formatUnits(balance.value, 18)) * 0.84).toFixed(2) : '0.00'}</div>
+              <div className="text-2xl font-light text-white">$ {
+                (
+                  (parseFloat(formatUnits(balance?.value || BigInt(0), 18)) * 0.84) +
+                  (parseFloat(formatUnits(cusdBalance?.value || BigInt(0), 18)) * 1.00) +
+                  (parseFloat(formatUnits(ceurBalance?.value || BigInt(0), 18)) * 1.08)
+                ).toFixed(2)
+              }</div>
             </div>
           </section>
 
