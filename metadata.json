@@ -1,0 +1,6 @@
+{
+  "name": "Celo Swap Agent",
+  "description": "An AI-powered token swap agent on the Celo blockchain.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
