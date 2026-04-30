@@ -157,12 +157,43 @@ export default function Home() {
       return;
     }
 
+    const maxRetries = 3;
+    const baseDelay = 1000; // 1s
+
+    const attemptFetch = async (retryCount: number): Promise<any> => {
+      try {
+        setIsTyping(true);
+        const amountParam = isBuy ? `buyAmount=${parseEther(amount).toString()}` : `sellAmount=${parseEther(amount).toString()}`;
+        const url = `https://celo.api.0x.org/swap/v1/quote?sellToken=${sellToken}&buyToken=${buyToken}&${amountParam}`;
+        
+        const res = await fetch(url);
+        const quote = await res.json();
+
+        if (quote.error) {
+          // If it's a 429 or 5xx, or specific reliability errors, we might want to retry
+          // 0x specific errors often have "reason"
+          if (retryCount < maxRetries) {
+             const delay = baseDelay * Math.pow(2, retryCount);
+             console.log(`Retry attempt ${retryCount + 1} after ${delay}ms...`);
+             await new Promise(resolve => setTimeout(resolve, delay));
+             return attemptFetch(retryCount + 1);
+          }
+          throw new Error(quote.reason || 'Failed to fetch quote');
+        }
+        return quote;
+      } catch (error: any) {
+        if (retryCount < maxRetries) {
+          const delay = baseDelay * Math.pow(2, retryCount);
+          console.log(`Retry attempt ${retryCount + 1} due to network error after ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return attemptFetch(retryCount + 1);
+        }
+        throw error;
+      }
+    };
+
     try {
-      setIsTyping(true);
-      const amountParam = isBuy ? `buyAmount=${parseEther(amount).toString()}` : `sellAmount=${parseEther(amount).toString()}`;
-      const url = `https://celo.api.0x.org/swap/v1/quote?sellToken=${sellToken}&buyToken=${buyToken}&${amountParam}`;
-      const res = await fetch(url);
-      const quote = await res.json();
+      const quote = await attemptFetch(0);
 
       if (quote.error) throw new Error(quote.reason || 'Failed to fetch quote');
 
