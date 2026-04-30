@@ -5,7 +5,7 @@ import { sdk } from '@farcaster/miniapp-sdk';
 import { useAccount, useConnect, useDisconnect, useSendTransaction, useBalance } from 'wagmi';
 import { coinbaseWallet } from 'wagmi/connectors';
 import { motion, AnimatePresence } from 'motion/react';
-import { Send, Wallet, RefreshCw, Bot, User, ArrowRightLeft, Sparkles, AlertCircle, Activity, BarChart3, ShieldCheck } from 'lucide-react';
+import { Send, Wallet, RefreshCw, Bot, User, ArrowRightLeft, Sparkles, AlertCircle, Activity, BarChart3, ShieldCheck, Settings } from 'lucide-react';
 import { ai } from '@/lib/gemini';
 import { parseEther, formatUnits } from 'viem';
 
@@ -33,6 +33,12 @@ export default function Home() {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [pendingQuote, setPendingQuote] = useState<any>(null);
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
+  const [enabledTokens, setEnabledTokens] = useState<Record<string, boolean>>({
+    'CELO': true,
+    'CUSD': true,
+    'CEUR': true,
+  });
+  const [showSettings, setShowSettings] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { address, isConnected } = useAccount();
@@ -51,8 +57,13 @@ export default function Home() {
         if (history) {
           setTradeHistory(JSON.parse(history));
         }
+
+        const settings = await sdk.actions.getStorage({ key: 'token_settings' });
+        if (settings) {
+          setEnabledTokens(JSON.parse(settings));
+        }
       } catch (e) {
-        console.error("Failed to load history", e);
+        console.error("Failed to load data", e);
       }
       
       setIsReady(true);
@@ -77,6 +88,16 @@ export default function Home() {
     }
   };
 
+  const toggleToken = async (symbol: string) => {
+    const newSettings = { ...enabledTokens, [symbol]: !enabledTokens[symbol] };
+    setEnabledTokens(newSettings);
+    try {
+      await sdk.actions.setStorage({ key: 'token_settings', value: JSON.stringify(newSettings) });
+    } catch (e) {
+      console.error("Failed to save settings", e);
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim()) return;
 
@@ -96,10 +117,12 @@ export default function Home() {
               User input: "${userMessage}"
               
               Context:
-              - CELO: ${TOKENS.CELO}
-              - cUSD: ${TOKENS.CUSD}
-              - cEUR: ${TOKENS.CEUR}
+              ${Object.entries(TOKENS)
+                .filter(([symbol]) => enabledTokens[symbol])
+                .map(([symbol, address]) => `- ${symbol}: ${address}`)
+                .join('\n')}
               - User Balance: ${balance ? formatUnits(balance.value, 18) : '0'} CELO
+              - NOTE: ONLY RECOMMEND OR USE TOKENS LISTED ABOVE.
               
               Task: Analyze the intent. 
               - If the user wants to swap, return a JSON object.
@@ -152,8 +175,8 @@ export default function Home() {
     const sellToken = TOKENS[sellSymbol.toUpperCase()];
     const buyToken = TOKENS[buySymbol.toUpperCase()];
 
-    if (!sellToken || !buyToken) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `I don't support ${sellSymbol} or ${buySymbol} yet. I currently support CELO, cUSD, and cEUR.` }]);
+    if (!sellToken || !buyToken || !enabledTokens[sellSymbol.toUpperCase()] || !enabledTokens[buySymbol.toUpperCase()]) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `I don't support ${sellSymbol} or ${buySymbol} in your current settings. Please enable them in settings if you wish to use them.` }]);
       return;
     }
 
@@ -316,7 +339,13 @@ export default function Home() {
                <h2 className="text-lg font-medium text-white">Agent Interface</h2>
              </div>
              <div className="flex gap-2">
-               <button className="p-2 hover:bg-white/5 rounded-lg transition-all text-slate-500"><Sparkles size={16} /></button>
+               <button 
+                 onClick={() => setShowSettings(true)}
+                 className="p-2 hover:bg-white/5 rounded-lg transition-all text-slate-500"
+                 title="Token Settings"
+               >
+                 <Settings size={16} />
+               </button>
                <button className="p-2 hover:bg-white/5 rounded-lg transition-all text-slate-500"><RefreshCw size={16} /></button>
              </div>
           </div>
@@ -648,6 +677,78 @@ export default function Home() {
                   </button>
                 </div>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      
+      {/* Settings Modal Overlay */}
+      <AnimatePresence>
+        {showSettings && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSettings(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-sm bg-[#0D0E12] border border-white/10 rounded-[2rem] p-8 shadow-2xl overflow-hidden"
+            >
+              <div className="absolute -top-24 -left-24 w-48 h-48 bg-[#FBCC5C]/10 blur-[80px] rounded-full" />
+              
+              <div className="flex items-center gap-4 mb-8">
+                <div className="w-10 h-10 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center">
+                  <Settings size={20} className="text-[#FBCC5C]" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Agent Settings</h3>
+                  <p className="text-[9px] text-slate-500 uppercase tracking-widest">Manage supported tokens</p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-4">Enabled Tokens</p>
+                {Object.keys(TOKENS).map((symbol) => (
+                  <div key={symbol} className="flex items-center justify-between p-4 bg-white/[0.02] border border-white/5 rounded-2xl hover:bg-white/[0.04] transition-all">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold ${
+                        symbol === 'CELO' ? 'bg-[#FBCC5C]/10 text-[#FBCC5C]' : 'bg-[#35D07F]/10 text-[#35D07F]'
+                      }`}>
+                        {symbol[0]}
+                      </div>
+                      <span className="text-sm font-medium text-white">{symbol}</span>
+                    </div>
+                    <button 
+                      onClick={() => toggleToken(symbol)}
+                      className={`relative w-12 h-6 rounded-full transition-all duration-300 flex items-center px-1 ${
+                        enabledTokens[symbol] ? 'bg-[#35D07F]' : 'bg-white/10'
+                      }`}
+                    >
+                      <motion.div 
+                        initial={false}
+                        animate={{ x: enabledTokens[symbol] ? 24 : 0 }}
+                        className="w-4 h-4 bg-white rounded-full shadow-md"
+                      />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-white/5 text-[9px] text-slate-600 leading-relaxed">
+                Tokens disabled here will be ignored by the AI agent in its analysis and swap recommendations.
+              </div>
+
+              <button 
+                onClick={() => setShowSettings(false)}
+                className="w-full mt-8 py-4 bg-white/5 border border-white/10 text-white rounded-xl font-bold text-sm hover:bg-white/10 transition-all"
+              >
+                Done
+              </button>
             </motion.div>
           </div>
         )}
