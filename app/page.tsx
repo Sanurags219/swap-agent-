@@ -39,6 +39,7 @@ export default function Home() {
     'CEUR': true,
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [slippage, setSlippage] = useState('0.01'); // 1%
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { address, isConnected } = useAccount();
@@ -69,6 +70,11 @@ export default function Home() {
         const settings = await sdk.actions.getStorage({ key: 'token_settings' });
         if (settings) {
           setEnabledTokens(JSON.parse(settings));
+        }
+
+        const slip = await sdk.actions.getStorage({ key: 'slippage_settings' });
+        if (slip) {
+          setSlippage(slip);
         }
       } catch (e) {
         console.error("Failed to load data", e);
@@ -106,6 +112,15 @@ export default function Home() {
     }
   };
 
+  const updateSlippage = async (val: string) => {
+    setSlippage(val);
+    try {
+      await sdk.actions.setStorage({ key: 'slippage_settings', value: val });
+    } catch (e) {
+      console.error("Failed to save slippage", e);
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim()) return;
 
@@ -135,9 +150,13 @@ export default function Home() {
                   return `- ${symbol}: ${address} (Balance: ${bal})`;
                 })
                 .join('\n')}
+              - Current Slippage Tolerance: ${parseFloat(slippage) * 100}%
               - NOTE: ONLY RECOMMEND OR USE TOKENS LISTED ABOVE.
               
-              Task: Analyze the user intent and convert it into a structured command or text response.
+              Task: Analyze the user intent and convert it into a structured command, settings update, or text response.
+              
+              Rules:
+              - If user wants to change slippage (e.g., "set slippage to 2%"), return: { "type": "settings_update", "slippage": "0.02", "content": "Slippage updated to 2%." }
               
               Complex Swap Rules:
               - If user says "half my [Token]", calculate: (Balance / 2).
@@ -177,7 +196,10 @@ export default function Home() {
       const text = await response.response.text();
       const data = JSON.parse(text || '{}');
 
-      if (data.type === 'swap_request') {
+      if (data.type === 'settings_update' && data.slippage) {
+        updateSlippage(data.slippage);
+        setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
+      } else if (data.type === 'swap_request') {
         const amount = data.sellAmount || data.buyAmount;
         const isBuy = !!data.buyAmount;
         fetchQuote(data.sellToken, data.buyToken, amount, isBuy);
@@ -208,7 +230,7 @@ export default function Home() {
       try {
         setIsTyping(true);
         const amountParam = isBuy ? `buyAmount=${parseEther(amount).toString()}` : `sellAmount=${parseEther(amount).toString()}`;
-        const url = `https://celo.api.0x.org/swap/v1/quote?sellToken=${sellToken}&buyToken=${buyToken}&${amountParam}`;
+        const url = `https://celo.api.0x.org/swap/v1/quote?sellToken=${sellToken}&buyToken=${buyToken}&${amountParam}&slippagePercentage=${slippage}`;
         
         const res = await fetch(url);
         const quote = await res.json();
@@ -690,6 +712,10 @@ export default function Home() {
                     <span className="text-white font-mono">{pendingQuote.estimatedFee} CELO</span>
                   </div>
                   <div className="flex justify-between items-center text-xs">
+                    <span className="text-slate-500 font-medium">Slippage Tolerance</span>
+                    <span className="text-white font-mono">{parseFloat(slippage) * 100}%</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
                     <span className="text-slate-500 font-medium">Price Impact</span>
                     <span className="text-[#35D07F] font-mono">{"< 0.1%"}</span>
                   </div>
@@ -749,7 +775,30 @@ export default function Home() {
               </div>
 
               <div className="space-y-4">
-                <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-4">Enabled Tokens</p>
+                <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-4">Trading Settings</p>
+                <div className="p-4 bg-white/[0.02] border border-white/5 rounded-2xl">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-medium text-white">Slippage Tolerance</span>
+                    <span className="text-xs font-mono text-[#FBCC5C]">{parseFloat(slippage) * 100}%</span>
+                  </div>
+                  <div className="flex gap-2">
+                    {['0.005', '0.01', '0.03'].map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => updateSlippage(s)}
+                        className={`flex-1 py-2 text-[10px] font-bold rounded-lg border transition-all ${
+                          slippage === s 
+                            ? 'bg-[#FBCC5C] border-[#FBCC5C] text-black' 
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
+                        }`}
+                      >
+                        {parseFloat(s) * 100}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-8 mb-4">Enabled Tokens</p>
                 {Object.keys(TOKENS).map((symbol) => (
                   <div key={symbol} className="flex items-center justify-between p-4 bg-white/[0.02] border border-white/5 rounded-2xl hover:bg-white/[0.04] transition-all">
                     <div className="flex items-center gap-3">
