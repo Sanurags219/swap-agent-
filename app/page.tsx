@@ -99,16 +99,29 @@ export default function Home() {
               - CELO: ${TOKENS.CELO}
               - cUSD: ${TOKENS.CUSD}
               - cEUR: ${TOKENS.CEUR}
+              - User Balance: ${balance ? formatUnits(balance.value, 18) : '0'} CELO
               
-              Task: Analyze the intent. If it's a swap request, return a JSON object with:
+              Task: Analyze the intent. 
+              - If the user wants to swap, return a JSON object.
+              - Support relative amounts like "half my CELO" (calculate based on balance).
+              - Support "buy 100 cUSD" (set "buyAmount" instead of "sellAmount").
+              - Priority/Preference: If they mention "lowest fee", acknowledge it in the content but note that 0x finds the best route automatically.
+              
+              JSON Format for swaps:
               {
                 "type": "swap_request",
                 "sellToken": "token symbol",
                 "buyToken": "token symbol",
-                "sellAmount": "number"
+                "sellAmount": "number (optional)",
+                "buyAmount": "number (optional)",
+                "content": "friendly internal thought or confirmation message"
               }
-              Otherwise, return a friendly text response.
-              Only return JSON if it's clearly a swap.
+              
+              Otherwise, return a friendly text response in:
+              {
+                "type": "text",
+                "content": "your message"
+              }
             ` }]
           }
         ],
@@ -121,7 +134,9 @@ export default function Home() {
       const data = JSON.parse(text || '{}');
 
       if (data.type === 'swap_request') {
-        fetchQuote(data.sellToken, data.buyToken, data.sellAmount);
+        const amount = data.sellAmount || data.buyAmount;
+        const isBuy = !!data.buyAmount;
+        fetchQuote(data.sellToken, data.buyToken, amount, isBuy);
       } else {
         setMessages(prev => [...prev, { role: 'assistant', content: data.content || text || "I'm not sure how to handle that." }]);
       }
@@ -133,7 +148,7 @@ export default function Home() {
     }
   };
 
-  const fetchQuote = async (sellSymbol: string, buySymbol: string, amount: string) => {
+  const fetchQuote = async (sellSymbol: string, buySymbol: string, amount: string, isBuy: boolean = false) => {
     const sellToken = TOKENS[sellSymbol.toUpperCase()];
     const buyToken = TOKENS[buySymbol.toUpperCase()];
 
@@ -144,7 +159,8 @@ export default function Home() {
 
     try {
       setIsTyping(true);
-      const url = `https://celo.api.0x.org/swap/v1/quote?sellToken=${sellToken}&buyToken=${buyToken}&sellAmount=${parseEther(amount).toString()}`;
+      const amountParam = isBuy ? `buyAmount=${parseEther(amount).toString()}` : `sellAmount=${parseEther(amount).toString()}`;
+      const url = `https://celo.api.0x.org/swap/v1/quote?sellToken=${sellToken}&buyToken=${buyToken}&${amountParam}`;
       const res = await fetch(url);
       const quote = await res.json();
 
