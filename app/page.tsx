@@ -30,18 +30,31 @@ export default function Home() {
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingQuote, setPendingQuote] = useState<any>(null);
+  const [tradeHistory, setTradeHistory] = useState<any[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { address, isConnected } = useAccount();
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
-  const { data: balance } = useBalance({ address });
+  const { data: balance, refetch: refetchBalance } = useBalance({ address });
   const { sendTransactionAsync } = useSendTransaction();
 
-  // Initialize Farcaster SDK
+  // Initialize Farcaster SDK and Load History
   useEffect(() => {
     const init = async () => {
       await sdk.actions.ready();
+      
+      try {
+        const history = await sdk.actions.getStorage({ key: 'trade_history' });
+        if (history) {
+          setTradeHistory(JSON.parse(history));
+        }
+      } catch (e) {
+        console.error("Failed to load history", e);
+      }
+      
       setIsReady(true);
     };
     init();
@@ -53,6 +66,16 @@ export default function Home() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isTyping]);
+
+  const saveToHistory = async (trade: any) => {
+    const newHistory = [trade, ...tradeHistory].slice(0, 50);
+    setTradeHistory(newHistory);
+    try {
+      await sdk.actions.setStorage({ key: 'trade_history', value: JSON.stringify(newHistory) });
+    } catch (e) {
+      console.error("Failed to save history", e);
+    }
+  };
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -127,11 +150,14 @@ export default function Home() {
 
       if (quote.error) throw new Error(quote.reason || 'Failed to fetch quote');
 
+      // Estimate fee in CELO
+      const estimatedFee = formatUnits(BigInt(quote.gas) * BigInt(quote.gasPrice), 18).slice(0, 10);
+
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: `I found a quote! You'll receive approx. ${formatUnits(quote.buyAmount, 18).slice(0, 8)} ${buySymbol.toUpperCase()} for ${amount} ${sellSymbol.toUpperCase()}.`,
+        content: `I found a quote! You'll receive approx. ${formatUnits(quote.buyAmount, 18).slice(0, 8)} ${buySymbol.toUpperCase()} for ${amount} ${sellSymbol.toUpperCase()}. Estimated fee: ${estimatedFee} CELO.`,
         type: 'swap_quote',
-        quoteData: { ...quote, sellSymbol, buySymbol, amount }
+        quoteData: { ...quote, sellSymbol, buySymbol, amount, estimatedFee }
       }]);
     } catch (error: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `Could not fetch quote: ${error.message}` }]);
@@ -147,13 +173,27 @@ export default function Home() {
     }
 
     try {
+      setShowConfirmModal(false);
       const tx = await sendTransactionAsync({
         to: quote.to as `0x${string}`,
         data: quote.data as `0x${string}`,
         value: BigInt(quote.value),
       });
 
-      setMessages(prev => [...prev, { role: 'assistant', content: `Swap transaction sent! Hash: ${tx.substring(0, 10)}...` }]);
+      const trade = {
+        hash: tx,
+        sellToken: quote.sellSymbol,
+        buyToken: quote.buySymbol,
+        sellAmount: quote.amount,
+        buyAmount: formatUnits(quote.buyAmount, 18).slice(0, 8),
+        timestamp: new Date().toISOString(),
+        fee: quote.estimatedFee
+      };
+
+      await saveToHistory(trade);
+      refetchBalance();
+
+      setMessages(prev => [...prev, { role: 'assistant', content: `Swap successful! Hash: ${tx.substring(0, 10)}...` }]);
     } catch (error: any) {
       console.error(error);
       setMessages(prev => [...prev, { role: 'assistant', content: `Swap failed: ${error.message}` }]);
@@ -284,10 +324,13 @@ export default function Home() {
                           </div>
                           
                           <button 
-                            onClick={() => executeSwap(msg.quoteData)}
+                            onClick={() => {
+                              setPendingQuote(msg.quoteData);
+                              setShowConfirmModal(true);
+                            }}
                             className="w-full py-4 bg-gradient-to-r from-[#35D07F] to-[#2BAE6B] text-black rounded-xl font-bold text-sm flex items-center justify-center gap-2 hover:shadow-[0_0_20px_rgba(53,208,127,0.2)] transition-all active:scale-95"
                           >
-                             Execute Swap
+                             Review Swap
                           </button>
                         </div>
                       )}
@@ -383,11 +426,53 @@ export default function Home() {
             </div>
           </section>
 
+          {/* Trade History Box */}
+          <section className="bento-card bg-white/[0.02] flex-grow overflow-hidden flex flex-col min-h-[250px]">
+             <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">Trade History</h3>
+              <Activity size={14} className="text-slate-500" />
+            </div>
+            <div className="space-y-4 overflow-y-auto custom-scrollbar flex-1 pr-1">
+              {tradeHistory.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center opacity-20 py-10">
+                  <RefreshCw size={24} className="mb-2" />
+                  <p className="text-[10px] uppercase">No trades yet</p>
+                </div>
+              ) : (
+                tradeHistory.map((trade, i) => (
+                  <div key={i} className="p-3 bg-white/[0.03] border border-white/5 rounded-xl space-y-2 hover:bg-white/[0.05] transition-all">
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-white">{trade.sellAmount} {trade.sellToken}</span>
+                        <ArrowRightLeft size={10} className="text-slate-500" />
+                        <span className="text-sm font-bold text-[#35D07F]">{trade.buyAmount} {trade.buyToken}</span>
+                      </div>
+                      <span className="text-[9px] text-slate-500 font-mono">
+                        {new Date(trade.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-[9px] font-mono">
+                      <a 
+                        href={`https://celoscan.io/tx/${trade.hash}`} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[#FBCC5C] hover:underline"
+                      >
+                        {trade.hash.slice(0, 10)}...
+                      </a>
+                      <span className="text-slate-600">Fee: {trade.fee} CELO</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
           {/* Tips Box */}
           <section className="bento-card bg-emerald-500/5 border-emerald-500/10 hover:bg-emerald-500/10">
             <h3 className="text-[10px] uppercase tracking-[0.2em] text-[#35D07F] font-bold mb-3">AI Insight</h3>
             <p className="text-xs text-slate-300 leading-relaxed italic">
-              "CELO volume is up 2.4% today. It might be a good time to rebalance your cUSD holdings for yield."
+              &quot;CELO volume is up 2.4% today. It might be a good time to rebalance your cUSD holdings for yield.&quot;
             </p>
           </section>
 
@@ -428,6 +513,98 @@ export default function Home() {
           50% { opacity: 0.5; }
         }
       `}</style>
+
+      {/* Confirmation Modal Overlay */}
+      <AnimatePresence>
+        {showConfirmModal && pendingQuote && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowConfirmModal(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-md bg-[#0D0E12] border border-white/10 rounded-[2.5rem] p-8 shadow-2xl overflow-hidden"
+            >
+              {/* Background Glow */}
+              <div className="absolute -top-24 -right-24 w-48 h-48 bg-[#35D07F]/20 blur-[80px] rounded-full" />
+              
+              <div className="flex items-center gap-4 mb-8">
+                <div className="w-12 h-12 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-center">
+                  <RefreshCw size={24} className="text-[#FBCC5C]" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-white">Review Swap</h3>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest">Verify transaction details</p>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 gap-4">
+                  <div className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">You Pay</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-2xl font-bold text-white">{pendingQuote.amount}</span>
+                      <span className="px-3 py-1 bg-[#FBCC5C] text-black text-[10px] font-black rounded-lg">{pendingQuote.sellSymbol}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-center -my-3 relative z-10">
+                    <div className="w-10 h-10 bg-[#0D0E12] border border-white/10 rounded-full flex items-center justify-center text-slate-500">
+                      <ArrowRightLeft size={16} />
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">You Receive (Est.)</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-2xl font-bold text-[#35D07F]">
+                        {formatUnits(pendingQuote.buyAmount, 18).slice(0, 8)}
+                      </span>
+                      <span className="px-3 py-1 bg-[#35D07F] text-black text-[10px] font-black rounded-lg">{pendingQuote.buySymbol}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 px-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-slate-500 font-medium">Estimated Network Fee</span>
+                    <span className="text-white font-mono">{pendingQuote.estimatedFee} CELO</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-slate-500 font-medium">Price Impact</span>
+                    <span className="text-[#35D07F] font-mono">{"< 0.1%"}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-slate-500 font-medium">Route</span>
+                    <span className="text-white font-mono text-[10px]">0x Protocol (CELO)</span>
+                  </div>
+                </div>
+
+                <div className="pt-4 flex gap-4">
+                  <button 
+                    onClick={() => setShowConfirmModal(false)}
+                    className="flex-1 py-4 bg-white/5 border border-white/10 text-white rounded-2xl font-bold text-sm hover:bg-white/10 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={() => executeSwap(pendingQuote)}
+                    className="flex-1 py-4 bg-[#35D07F] text-black rounded-2xl font-black text-sm hover:shadow-[0_0_30px_rgba(53,208,127,0.3)] transition-all active:scale-95"
+                  >
+                    Confirm Swap
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
